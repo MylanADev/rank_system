@@ -1,9 +1,9 @@
 // ============================================================
-//  SYSTÈME DE RANGS : CONFIGURATION ET COMMANDES INTERACTIVES
+//  SYSTÈME DE RANGS ET STAFF MODE HYBRIDE
 //  Minecraft 1.21.1 - NeoForge - KubeJS
 // ============================================================
 
-// --- CONFIGURATION DES ACCÈS AUX COMMANDES -----------------
+// --- ⚙️ CONFIGURATION DES ACCÈS AUX COMMANDES ----------------
 var RankSys_COMMAND_PERMISSIONS = {
     'modmute':     'modo',
     'modunmute':   'modo',
@@ -14,6 +14,7 @@ var RankSys_COMMAND_PERMISSIONS = {
     'modunwarn':   'modo',
     'modtp':       'modo',
     'modinvsee':   'modo', 
+    'staff':       'modo',
 
     'modkick':     'admin',
     'modban':      'admin',
@@ -26,28 +27,36 @@ var RankSys_COMMAND_PERMISSIONS = {
 
     'rank_set':    'fondateur' 
 };
-// ------------------------------------------------------------
 
-function RankSysStringArgType() {
-    return Java.loadClass('com.mojang.brigadier.arguments.StringArgumentType')
-}
-
-function RankSysIntegerArgumentType() {
-    return Java.loadClass('com.mojang.brigadier.arguments.IntegerArgumentType')
-}
+// --- ⚙️ CONFIGURATION DES OUTILS DU STAFF MODE ---------------
+const StaffSys_TOOLS = {
+    // Outils nécessitant de cibler un joueur (pré-remplissent le chat)
+    'tp':     { id: 'minecraft:ender_pearl',   name: '§dTéléportation',      slot: 0, type: 'target_player', cmd: 'modtp' },
+    'invsee': { id: 'minecraft:spyglass',      name: '§bInspecter (Invsee)', slot: 1, type: 'target_player', cmd: 'modinvsee' },
+    'freeze': { id: 'minecraft:blaze_rod',     name: '§eGeler (Freeze)',     slot: 2, type: 'target_player', cmd: 'modfreeze' },
+    'warn':   { id: 'minecraft:redstone_torch',name: '§cAvertir (Warn)',     slot: 3, type: 'target_player', cmd: 'modwarn' },
+    'mute':   { id: 'minecraft:string',        name: '§7Rendre Muet',        slot: 4, type: 'target_player', cmd: 'modmute' },
+    'ban':    { id: 'minecraft:tnt',           name: '§4Bannir (Ban)',       slot: 5, type: 'target_player', cmd: 'modban' },
+    
+    // Outils d'action directe ou "toggle"
+    'vanish': { id: 'minecraft:gunpowder',     name: '§8Vanish (OFF)',       slot: 8, type: 'toggle_vanish', cmd: null },
+    'clear':  { id: 'minecraft:sponge',        name: '§eNettoyer mon inventaire', slot: 35, type: 'direct_cmd', cmd: 'modclear' },
+    'heal':   { id: 'minecraft:golden_apple',  name: '§cSe soigner',         slot: 34, type: 'direct_cmd', cmd: 'modheal' }
+};
 
 var RankSys_RANK_ORDER = ['joueur', 'modo', 'admin', 'fondateur']
 
-// --- 🛠️ FONCTIONS UTILITAIRES DE GESTION DES DONNÉES ---------
+function RankSysStringArgType() { return Java.loadClass('com.mojang.brigadier.arguments.StringArgumentType') }
+function RankSysIntegerArgumentType() { return Java.loadClass('com.mojang.brigadier.arguments.IntegerArgumentType') }
+
+// ============================================================
+//  🛠️ FONCTIONS UTILITAIRES
+// ============================================================
 
 function getPlayerWarns(player) {
     const jsonStr = player.persistentData.getString('warnsJson')
     if (!jsonStr) return []
-    try {
-        return JSON.parse(jsonStr)
-    } catch (e) {
-        return []
-    }
+    try { return JSON.parse(jsonStr) } catch (e) { return [] }
 }
 
 function savePlayerWarns(player, warnsArray) {
@@ -66,11 +75,8 @@ function hasRank(player, minRank) {
 function setRank(server, player, rank) {
     player.persistentData.putString('rank', rank)
     if (server) {
-        if (rank === 'fondateur') {
-            server.runCommandSilent(`op ${player.username}`)
-        } else {
-            server.runCommandSilent(`deop ${player.username}`)
-        }
+        if (rank === 'fondateur') server.runCommandSilent(`op ${player.username}`)
+        else server.runCommandSilent(`deop ${player.username}`)
     }
 }
 
@@ -79,9 +85,88 @@ function requireRankFor(commandKey) {
     return src => src.player == null || hasRank(src.player, minRank)
 }
 
-// ------------------------------------------------------------
-//  ÉVÉNEMENTS SERVEUR
-// ------------------------------------------------------------
+function doGamemode(server, ctx, Arguments, mode) {
+    const target = Arguments.PLAYER.getResult(ctx, 'cible')
+    if (server) server.runCommandSilent(`gamemode ${mode} ${target.username}`)
+    return 1
+}
+
+// --- LOGIQUE DU STAFF MODE ---
+
+function executeVanish(player, enable) {
+    const pData = player.persistentData;
+    pData.putBoolean('vanished', enable);
+    
+    if (enable) {
+        player.potionEffects.add('minecraft:invisibility', 999999, 1, false, false);
+        player.tell(Text.gray('Vous êtes maintenant invisible (Vanish ON).'));
+        let sugar = Item.of('minecraft:sugar').withName('§fVanish (ON)');
+        sugar.nbt = { StaffTool: 'vanish' };
+        player.inventory.setItem(StaffSys_TOOLS['vanish'].slot, sugar);
+    } else {
+        player.potionEffects.clear(); 
+        player.tell(Text.gray('Vous êtes de nouveau visible (Vanish OFF).'));
+        let gunPowder = Item.of('minecraft:gunpowder').withName('§8Vanish (OFF)');
+        gunPowder.nbt = { StaffTool: 'vanish' };
+        player.inventory.setItem(StaffSys_TOOLS['vanish'].slot, gunPowder);
+    }
+}
+
+function toggleStaffMode(player) {
+    const pData = player.persistentData;
+    const isStaffMode = pData.getBoolean('staffMode');
+
+    if (isStaffMode) {
+        // --- DESACTIVATION ---
+        player.inventory.clear();
+        if (pData.contains('savedInventory')) {
+            const savedItems = pData.getList('savedInventory', 10);
+            for (let i = 0; i < savedItems.size(); i++) {
+                let itemTag = savedItems.getCompound(i);
+                let slot = itemTag.getByte('Slot');
+                let itemStack = Item.of(itemTag).itemStack;
+                player.inventory.setItem(slot, itemStack);
+            }
+        }
+        pData.putBoolean('staffMode', false);
+        player.tell(Text.green('Staff Mode désactivé. Inventaire restauré.'));
+        if (pData.getBoolean('vanished')) executeVanish(player, false);
+
+    } else {
+        // --- ACTIVATION ---
+        let savedList = Utils.newList();
+        for (let i = 0; i < 36; i++) {
+            let item = player.inventory.getItem(i);
+            if (item && item.id !== 'minecraft:air') {
+                let itemTag = item.save(Utils.newCompound());
+                itemTag.putByte('Slot', i);
+                savedList.add(itemTag);
+            }
+        }
+        pData.putList('savedInventory', savedList);
+        player.inventory.clear();
+
+        // Distribution des outils
+        Object.keys(StaffSys_TOOLS).forEach(key => {
+            const tool = StaffSys_TOOLS[key];
+            let item = Item.of(tool.id).withName(tool.name);
+            if (tool.type === 'target_player') {
+                item.setLore(['§7Cliquez pour préparer la commande', '§7puis tapez le pseudo du joueur.']);
+            } else if (tool.type === 'direct_cmd' || tool.type === 'toggle_vanish') {
+                item.setLore(['§7Cliquez pour exécuter instantanément.']);
+            }
+            item.nbt = { StaffTool: key };
+            player.inventory.setItem(tool.slot, item);
+        });
+
+        pData.putBoolean('staffMode', true);
+        player.tell(Text.gold('Staff Mode activé. Ouvrez votre inventaire (E) pour voir les outils.'));
+    }
+}
+
+// ============================================================
+//  ÉVÉNEMENTS SERVEUR & INTERACTIONS
+// ============================================================
 
 PlayerEvents.loggedIn(event => {
     const { player } = event
@@ -118,12 +203,56 @@ PlayerEvents.chat(event => {
     }
 })
 
-// ------------------------------------------------------------
+// --- Protection des items du Staff Mode ---
+ItemEvents.dropped(event => {
+    if (event.item.nbt && event.item.nbt.contains('StaffTool')) {
+        event.cancel();
+    }
+})
+
+// --- Gestion des clics dans l'inventaire ---
+PlayerEvents.inventoryClicked(event => {
+    const { player, item } = event;
+
+    if (!player.persistentData.getBoolean('staffMode') || !item.nbt || !item.nbt.contains('StaffTool')) {
+        return;
+    }
+
+    event.cancel(); // Empêche de déplacer l'item
+
+    const toolKey = item.nbt.getString('StaffTool');
+    const tool = StaffSys_TOOLS[toolKey];
+
+    if (tool.type === 'toggle_vanish') {
+        const isVanished = player.persistentData.getBoolean('vanished');
+        executeVanish(player, !isVanished);
+    } 
+    else if (tool.type === 'direct_cmd') {
+        player.server.runCommandSilent(`execute as ${player.username} run ${tool.cmd}`);
+    }
+    else if (tool.type === 'target_player') {
+        player.closeMenu();
+        player.tell(Text.gold(`▶ Prêt pour ${tool.name}. Tapez le pseudo :`));
+        player.tell(Text.green('➤ [ CLIQUEZ ICI POUR ENTRER LE PSEUDO ]').click('suggest_command', `/${tool.cmd} `));
+    }
+})
+
+// ============================================================
 //  REGISTRE DES COMMANDES
-// ------------------------------------------------------------
+// ============================================================
 
 ServerEvents.commandRegistry(event => {
     const { commands: Commands, arguments: Arguments } = event
+
+    // ===== /staff =====
+    event.register(
+        Commands.literal('staff')
+            .requires(requireRankFor('staff'))
+            .executes(ctx => {
+                if (ctx.source.player) toggleStaffMode(ctx.source.player);
+                return 1;
+            })
+    )
 
     // ===== /rank =====
     const rankChoice = rankId => Commands.literal(rankId).executes(ctx => {
@@ -133,11 +262,9 @@ ServerEvents.commandRegistry(event => {
         setRank(serverInstance, target, rankId)
         target.tell(Text.gold(`Votre rang a été changé en : ${rankId}`))
         
-        if (ctx.source.player) {
-            ctx.source.player.tell(Text.green(`${target.username} est maintenant ${rankId}.`))
-        } else {
-            console.log(`${target.username} est maintenant ${rankId}.`)
-        }
+        if (ctx.source.player) ctx.source.player.tell(Text.green(`${target.username} est maintenant ${rankId}.`))
+        else console.log(`${target.username} est maintenant ${rankId}.`)
+        
         return 1
     })
 
@@ -154,9 +281,7 @@ ServerEvents.commandRegistry(event => {
             )
             .then(Commands.literal('info')
                 .executes(ctx => {
-                    if (ctx.source.player) {
-                        ctx.source.player.tell(Text.gray('Votre rang : ' + getRank(ctx.source.player)))
-                    }
+                    if (ctx.source.player) ctx.source.player.tell(Text.gray('Votre rang : ' + getRank(ctx.source.player)))
                     return 1
                 })
             )
@@ -336,7 +461,6 @@ ServerEvents.commandRegistry(event => {
 
                     moderator.tell(Text.gold(`╔═════ Inventaire de ${target.username} ═════`))
                     
-                    // 1. Armure & Main secondaire
                     let equipementLine = Text.gray(" Équipement: ")
                     const armorSlots = ["Casque", "Plastron", "Jambières", "Bottes"]
                     
@@ -363,7 +487,6 @@ ServerEvents.commandRegistry(event => {
                     moderator.tell(equipementLine)
                     moderator.tell(Text.gray("───────────────────────────────────────"))
 
-                    // 2. Grille principale (9x4)
                     let order = []
                     for (let i = 9; i < 36; i++) order.push(i) 
                     for (let i = 0; i < 9; i++) order.push(i)   
@@ -393,7 +516,6 @@ ServerEvents.commandRegistry(event => {
             )
     )
 
-    // Action interne liée au clic dans le chat pour supprimer un item
     event.register(
         Commands.literal('modinvsee_action')
             .requires(requireRankFor('modinvsee'))
@@ -407,7 +529,7 @@ ServerEvents.commandRegistry(event => {
                             const slot = RankSysIntegerArgumentType().getInteger(ctx, 'slot')
 
                             if (!moderator) return 1
-
+                            
                             let itemRemoved = 'un item'
 
                             if (type === 'main') {
@@ -548,7 +670,6 @@ ServerEvents.commandRegistry(event => {
             )
     )
 
-    // ===== COMMANDE /a (ADMIN CHAT) =====
     event.register(
         Commands.literal('a')
             .requires(requireRankFor('admin_chat'))
@@ -573,11 +694,3 @@ ServerEvents.commandRegistry(event => {
             )
     )
 })
-
-function doGamemode(server, ctx, Arguments, mode) {
-    const target = Arguments.PLAYER.getResult(ctx, 'cible')
-    if (server) {
-        server.runCommandSilent(`gamemode ${mode} ${target.username}`)
-    }
-    return 1
-}
