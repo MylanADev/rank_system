@@ -1,0 +1,584 @@
+// ============================================================
+//  SYSTÈME DE RANGS : CONFIGURATION ET COMMANDES INTERACTIVES
+//  Minecraft 1.21.1 - NeoForge - KubeJS
+//  À placer dans : kubejs/server_scripts/rank_system.js
+// ============================================================
+
+// --- ⚙️ CONFIGURATION DES ACCÈS AUX COMMANDES -----------------
+var RankSys_COMMAND_PERMISSIONS = {
+    'modmute':     'modo',
+    'modunmute':   'modo',
+    'modfreeze':   'modo',
+    'modunfreeze': 'modo',
+    'modwarn':     'modo',
+    'modwarns':    'modo', 
+    'modunwarn':   'modo',
+    'modtp':       'modo',
+    'modinvsee':   'modo', 
+
+    'modkick':     'admin',
+    'modban':      'admin',
+    'modunban':    'admin',
+    'modgm':       'admin',
+    'modclear':    'admin',
+    'modheal':     'admin',
+    'broadcast':   'admin',
+    'admin_chat':  'admin',
+
+    'rank_set':    'fondateur' 
+};
+// ------------------------------------------------------------
+
+function RankSysStringArgType() {
+    return Java.loadClass('com.mojang.brigadier.arguments.StringArgumentType')
+}
+
+function RankSysIntegerArgumentType() {
+    return Java.loadClass('com.mojang.brigadier.arguments.IntegerArgumentType')
+}
+
+var RankSys_RANK_ORDER = ['joueur', 'modo', 'admin', 'fondateur']
+
+// --- 🛠️ FONCTIONS UTILITAIRES DE GESTION DES DONNÉES ---------
+
+function getPlayerWarns(player) {
+    const jsonStr = player.persistentData.getString('warnsJson')
+    if (!jsonStr) return []
+    try {
+        return JSON.parse(jsonStr)
+    } catch (e) {
+        return []
+    }
+}
+
+function savePlayerWarns(player, warnsArray) {
+    player.persistentData.putString('warnsJson', JSON.stringify(warnsArray))
+}
+
+function getRank(player) {
+    const rank = player.persistentData.getString('rank')
+    return RankSys_RANK_ORDER.includes(rank) ? rank : 'joueur'
+}
+
+function hasRank(player, minRank) {
+    return RankSys_RANK_ORDER.indexOf(getRank(player)) >= RankSys_RANK_ORDER.indexOf(minRank)
+}
+
+function setRank(server, player, rank) {
+    player.persistentData.putString('rank', rank)
+    if (server) {
+        if (rank === 'fondateur') {
+            server.runCommandSilent(`op ${player.username}`)
+        } else {
+            server.runCommandSilent(`deop ${player.username}`)
+        }
+    }
+}
+
+function requireRankFor(commandKey) {
+    const minRank = RankSys_COMMAND_PERMISSIONS[commandKey] || 'fondateur';
+    return src => src.player == null || hasRank(src.player, minRank)
+}
+
+// ------------------------------------------------------------
+//  ÉVÉNEMENTS SERVEUR
+// ------------------------------------------------------------
+
+PlayerEvents.loggedIn(event => {
+    const { player } = event
+    const pData = player.persistentData
+
+    if (!pData.contains('rank')) {
+        pData.putString('rank', player.hasPermissions(4) ? 'fondateur' : 'joueur')
+    }
+
+    if (pData.getBoolean('muted')) {
+        player.tell(Text.red('Vous êtes toujours muet(te).'))
+    }
+})
+
+ServerEvents.tick(event => {
+    const { server } = event
+    if (server.tickCount % 5 === 0) {
+        server.players.forEach(player => {
+            const pData = player.persistentData
+            if (pData.getBoolean('frozen')) {
+                const x = pData.getDouble('frozenX')
+                const y = pData.getDouble('frozenY')
+                const z = pData.getDouble('frozenZ')
+                server.runCommandSilent(`tp ${player.username} ${x} ${y} ${z}`)
+            }
+        })
+    }
+})
+
+PlayerEvents.chat(event => {
+    if (event.player.persistentData.getBoolean('muted')) {
+        event.cancel()
+        event.player.tell(Text.red('Vous ne pouvez pas écrire dans le chat : vous êtes muet(te).'))
+    }
+})
+
+// ------------------------------------------------------------
+//  REGISTRE DES COMMANDES
+// ------------------------------------------------------------
+
+ServerEvents.commandRegistry(event => {
+    const { commands: Commands, arguments: Arguments } = event
+
+    // ===== /rank =====
+    const rankChoice = rankId => Commands.literal(rankId).executes(ctx => {
+        const target = Arguments.PLAYER.getResult(ctx, 'cible')
+        const serverInstance = ctx.source.server || (ctx.source.player ? ctx.source.player.server : null)
+        
+        setRank(serverInstance, target, rankId)
+        target.tell(Text.gold(`Votre rang a été changé en : ${rankId}`))
+        
+        if (ctx.source.player) {
+            ctx.source.player.tell(Text.green(`${target.username} est maintenant ${rankId}.`))
+        } else {
+            console.log(`${target.username} est maintenant ${rankId}.`)
+        }
+        return 1
+    })
+
+    event.register(
+        Commands.literal('rank')
+            .then(Commands.literal('set')
+                .requires(requireRankFor('rank_set'))
+                .then(Commands.argument('cible', Arguments.PLAYER.create(event))
+                    .then(rankChoice('fondateur'))
+                    .then(rankChoice('admin'))
+                    .then(rankChoice('modo'))
+                    .then(rankChoice('joueur'))
+                )
+            )
+            .then(Commands.literal('info')
+                .executes(ctx => {
+                    if (ctx.source.player) {
+                        ctx.source.player.tell(Text.gray('Votre rang : ' + getRank(ctx.source.player)))
+                    }
+                    return 1
+                })
+            )
+            .then(Commands.literal('claim')
+                .requires(src => src.player != null && src.player.hasPermissions(4))
+                .executes(ctx => {
+                    const serverInstance = ctx.source.server || ctx.source.player.server
+                    setRank(serverInstance, ctx.source.player, 'fondateur')
+                    ctx.source.player.tell(Text.gold('Vous êtes maintenant Fondateur.'))
+                    return 1
+                })
+            )
+    )
+
+    // ===== MODÉRATION EN JEU =====
+
+    event.register(
+        Commands.literal('modmute')
+            .requires(requireRankFor('modmute'))
+            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
+                .executes(ctx => {
+                    const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                    target.persistentData.putBoolean('muted', true)
+                    target.tell(Text.red('Vous avez été rendu muet(te) par la modération.'))
+                    if (ctx.source.player) ctx.source.player.tell(Text.gray(`${target.username} est maintenant muet(te).`))
+                    return 1
+                })
+            )
+    )
+
+    event.register(
+        Commands.literal('modunmute')
+            .requires(requireRankFor('modunmute'))
+            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
+                .executes(ctx => {
+                    const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                    target.persistentData.putBoolean('muted', false)
+                    target.tell(Text.green('Vous pouvez de nouveau écrire dans le chat.'))
+                    if (ctx.source.player) ctx.source.player.tell(Text.gray(`${target.username} n'est plus muet(te).`))
+                    return 1
+                })
+            )
+    )
+
+    event.register(
+        Commands.literal('modfreeze')
+            .requires(requireRankFor('modfreeze'))
+            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
+                .executes(ctx => {
+                    const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                    const pData = target.persistentData
+                    pData.putBoolean('frozen', true)
+                    pData.putDouble('frozenX', target.x)
+                    pData.putDouble('frozenY', target.y)
+                    pData.putDouble('frozenZ', target.z)
+                    target.tell(Text.red('Vous êtes figé(e) par la modération.'))
+                    if (ctx.source.player) ctx.source.player.tell(Text.gray(`${target.username} est figé(e).`))
+                    return 1
+                })
+            )
+    )
+
+    event.register(
+        Commands.literal('modunfreeze')
+            .requires(requireRankFor('modunfreeze'))
+            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
+                .executes(ctx => {
+                    const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                    target.persistentData.putBoolean('frozen', false)
+                    target.tell(Text.green('Vous pouvez de nouveau vous déplacer.'))
+                    if (ctx.source.player) ctx.source.player.tell(Text.gray(`${target.username} n'est plus figé(e).`))
+                    return 1
+                })
+            )
+    )
+
+    event.register(
+        Commands.literal('modwarn')
+            .requires(requireRankFor('modwarn'))
+            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
+                .then(Commands.argument('raison', RankSysStringArgType().greedyString())
+                    .executes(ctx => {
+                        const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                        const raison = RankSysStringArgType().getString(ctx, 'raison')
+                        
+                        let warns = getPlayerWarns(target)
+                        warns.push(raison)
+                        savePlayerWarns(target, warns)
+                        
+                        const total = warns.length
+                        target.tell(Text.gold(`Avertissement (${total}) : ${raison}`))
+                        if (ctx.source.player) ctx.source.player.tell(Text.gray(`${target.username} a été averti.`))
+                        return 1
+                    })
+                )
+            )
+    )
+
+    event.register(
+        Commands.literal('modwarns')
+            .requires(requireRankFor('modwarns'))
+            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
+                .executes(ctx => {
+                    const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                    let warns = getPlayerWarns(target)
+                    const total = warns.length
+                    
+                    if (total === 0) {
+                        if (ctx.source.player) ctx.source.player.tell(Text.green(`${target.username} n'a aucun avertissement.`))
+                    } else {
+                        if (ctx.source.player) {
+                            ctx.source.player.tell(Text.gold(`--- Avertissements de ${target.username} (${total}) ---`))
+                            for (let i = 0; i < total; i++) {
+                                ctx.source.player.tell(Text.yellow(`[ID: ${i + 1}] `).append(Text.white(warns[i])))
+                            }
+                        }
+                    }
+                    return 1
+                })
+            )
+    )
+
+    event.register(
+        Commands.literal('modunwarn')
+            .requires(requireRankFor('modunwarn'))
+            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
+                .then(Commands.literal('all').executes(ctx => {
+                    const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                    target.persistentData.remove('warnsJson')
+                    if (ctx.source.player) ctx.source.player.tell(Text.green(`Tous les avertissements de ${target.username} ont été supprimés.`))
+                    return 1
+                }))
+                .then(Commands.argument('id', RankSysIntegerArgumentType().integer(1))
+                    .executes(ctx => {
+                        const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                        const id = RankSysIntegerArgumentType().getInteger(ctx, 'id')
+                        let warns = getPlayerWarns(target)
+                        
+                        if (id > warns.length || id < 1) {
+                            if (ctx.source.player) ctx.source.player.tell(Text.red(`ID invalide. Ce joueur possède ${warns.length} warn(s).`))
+                            return 0;
+                        }
+                        
+                        const removedWarn = warns.splice(id - 1, 1)[0]
+                        savePlayerWarns(target, warns)
+                        
+                        if (ctx.source.player) ctx.source.player.tell(Text.green(`Avertissement supprimé avec succès : "${removedWarn}"`))
+                        return 1
+                    })
+                )
+            )
+    )
+
+    event.register(
+        Commands.literal('modtp')
+            .requires(requireRankFor('modtp'))
+            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
+                .executes(ctx => {
+                    const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                    const serverInstance = ctx.source.server || ctx.source.player.server
+                    serverInstance.runCommandSilent(`tp ${ctx.source.player.username} ${target.username}`)
+                    return 1
+                })
+            )
+    )
+
+    // ===== INTERFACE D'INSPECTION D'INVENTAIRE INTERACTIVE =====
+    event.register(
+        Commands.literal('modinvsee')
+            .requires(requireRankFor('modinvsee'))
+            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
+                .executes(ctx => {
+                    const moderator = ctx.source.player
+                    const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                    
+                    if (!moderator) return 1
+
+                    moderator.tell(Text.gold(`╔═════ Inventaire de ${target.username} ═════`))
+                    
+                    // 1. Armure & Main secondaire
+                    let equipementLine = Text.gray(" Équipement: ")
+                    const armorSlots = ["Casque", "Plastron", "Jambières", "Bottes"]
+                    
+                    for (let i = 3; i >= 0; i--) {
+                        let item = target.inventory.getArmor(i)
+                        let slotName = armorSlots[3 - i]
+                        if (!item || item.id === 'minecraft:air') {
+                            equipementLine.append(Text.darkGray(`[${slotName}] `))
+                        } else {
+                            let itemName = item.name ? Text.of(item.name).string : item.id
+                            equipementLine.append(Text.aqua(`[${item.count}x ${itemName}] `)
+                                .hover(item.tooltip || [])
+                                .click('suggest_command', `/modinvsee_action ${target.username} armor ${i}`))
+                        }
+                    }
+                    
+                    let offhand = target.inventory.getOffhandItem()
+                    if (offhand && offhand.id !== 'minecraft:air') {
+                        let offhandName = offhand.name ? Text.of(offhand.name).string : offhand.id
+                        equipementLine.append(Text.lightPurple(`[Main 2: ${offhand.count}x ${offhandName}] `)
+                            .hover(offhand.tooltip || [])
+                            .click('suggest_command', `/modinvsee_action ${target.username} offhand 0`))
+                    }
+                    moderator.tell(equipementLine)
+                    moderator.tell(Text.gray("───────────────────────────────────────"))
+
+                    // 2. Grille principale (9x4)
+                    let order = []
+                    for (let i = 9; i < 36; i++) order.push(i) 
+                    for (let i = 0; i < 9; i++) order.push(i)   
+
+                    let currentLine = Text.gray(" ")
+                    order.forEach((slotId, index) => {
+                        let item = target.inventory.getItem(slotId)
+                        
+                        if (!item || item.id === 'minecraft:air') {
+                            currentLine.append(Text.darkGray("[ ] "))
+                        } else {
+                            let color = (index >= 27) ? Text.green : Text.white
+                            currentLine.append(color(`[${item.count}x] `)
+                                .hover(item.tooltip || [])
+                                .click('suggest_command', `/modinvsee_action ${target.username} main ${slotId}`))
+                        }
+
+                        if ((index + 1) % 9 === 0) {
+                            moderator.tell(currentLine)
+                            currentLine = Text.gray(" ")
+                        }
+                    })
+
+                    moderator.tell(Text.gold("╚") + Text.yellow(" Astuce: Cliquez sur un item pour préparer sa suppression.").italic())
+                    return 1
+                })
+            )
+    )
+
+    // Action interne liée au clic dans le chat pour supprimer un item
+    event.register(
+        Commands.literal('modinvsee_action')
+            .requires(requireRankFor('modinvsee'))
+            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
+                .then(Commands.argument('type', RankSysStringArgType().word())
+                    .then(Commands.argument('slot', RankSysIntegerArgumentType().integer(0))
+                        .executes(ctx => {
+                            const moderator = ctx.source.player
+                            const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                            const type = RankSysStringArgType().getString(ctx, 'type')
+                            const slot = RankSysIntegerArgumentType().getInteger(ctx, 'slot')
+
+                            if (!moderator) return 1
+
+                            let itemRemoved = 'un item'
+
+                            if (type === 'main') {
+                                let item = target.inventory.getItem(slot)
+                                if (item && item.id !== 'minecraft:air') {
+                                    itemRemoved = item.name ? Text.of(item.name).string : item.id
+                                    target.inventory.setItem(slot, 'minecraft:air')
+                                }
+                            } else if (type === 'armor') {
+                                let item = target.inventory.getArmor(slot)
+                                if (item && item.id !== 'minecraft:air') {
+                                    itemRemoved = item.name ? Text.of(item.name).string : item.id
+                                    target.inventory.setArmor(slot, 'minecraft:air')
+                                }
+                            } else if (type === 'offhand') {
+                                let item = target.inventory.getOffhandItem()
+                                if (item && item.id !== 'minecraft:air') {
+                                    itemRemoved = item.name ? Text.of(item.name).string : item.id
+                                    target.inventory.setOffhandItem('minecraft:air')
+                                }
+                            }
+
+                            moderator.tell(Text.red(`[Modération] L'item "${itemRemoved}" a été supprimé de l'inventaire de ${target.username}.`))
+                            return 1
+                        })
+                    )
+                )
+            )
+    )
+
+    // ===== ADMINISTRATION =====
+
+    event.register(
+        Commands.literal('modkick')
+            .requires(requireRankFor('modkick'))
+            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
+                .executes(ctx => {
+                    const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                    const serverInstance = ctx.source.server || ctx.source.player.server
+                    serverInstance.runCommandSilent(`kick ${target.username} Expulsé par la modération/administration`)
+                    return 1
+                })
+                .then(Commands.argument('raison', RankSysStringArgType().greedyString())
+                    .executes(ctx => {
+                        const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                        const raison = RankSysStringArgType().getString(ctx, 'raison')
+                        const serverInstance = ctx.source.server || ctx.source.player.server
+                        serverInstance.runCommandSilent(`kick ${target.username} ${raison}`)
+                        return 1
+                    })
+                )
+            )
+    )
+
+    event.register(
+        Commands.literal('modban')
+            .requires(requireRankFor('modban'))
+            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
+                .executes(ctx => {
+                    const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                    const serverInstance = ctx.source.server || ctx.source.player.server
+                    serverInstance.runCommandSilent(`ban ${target.username} Banni du serveur`)
+                    return 1
+                })
+                .then(Commands.argument('raison', RankSysStringArgType().greedyString())
+                    .executes(ctx => {
+                        const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                        const raison = RankSysStringArgType().getString(ctx, 'raison')
+                        const serverInstance = ctx.source.server || ctx.source.player.server
+                        serverInstance.runCommandSilent(`ban ${target.username} ${raison}`)
+                        return 1
+                    })
+                )
+            )
+    )
+
+    event.register(
+        Commands.literal('modunban')
+            .requires(requireRankFor('modunban'))
+            .then(Commands.argument('pseudo', RankSysStringArgType().word())
+                .executes(ctx => {
+                    const pseudo = RankSysStringArgType().getString(ctx, 'pseudo')
+                    const serverInstance = ctx.source.server || ctx.source.player.server
+                    serverInstance.runCommandSilent(`pardon ${pseudo}`)
+                    if (ctx.source.player) ctx.source.player.tell(Text.gray(`${pseudo} a été débanni.`))
+                    return 1
+                })
+            )
+    )
+
+    event.register(
+        Commands.literal('modgm')
+            .requires(requireRankFor('modgm'))
+            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
+                .then(Commands.literal('survival').executes(ctx => doGamemode(ctx.source.server || ctx.source.player.server, ctx, Arguments, 'survival')))
+                .then(Commands.literal('creative').executes(ctx => doGamemode(ctx.source.server || ctx.source.player.server, ctx, Arguments, 'creative')))
+                .then(Commands.literal('spectator').executes(ctx => doGamemode(ctx.source.server || ctx.source.player.server, ctx, Arguments, 'spectator')))
+                .then(Commands.literal('adventure').executes(ctx => doGamemode(ctx.source.server || ctx.source.player.server, ctx, Arguments, 'adventure')))
+            )
+    )
+
+    event.register(
+        Commands.literal('modclear')
+            .requires(requireRankFor('modclear'))
+            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
+                .executes(ctx => {
+                    const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                    const serverInstance = ctx.source.server || ctx.source.player.server
+                    serverInstance.runCommandSilent(`clear ${target.username}`)
+                    return 1
+                })
+            )
+    )
+
+    event.register(
+        Commands.literal('modheal')
+            .requires(requireRankFor('modheal'))
+            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
+                .executes(ctx => {
+                    const target = Arguments.PLAYER.getResult(ctx, 'cible')
+                    target.heal(20)
+                    target.tell(Text.green('Vous avez été soigné(e).'))
+                    return 1
+                })
+            )
+    )
+
+    event.register(
+        Commands.literal('broadcast')
+            .requires(requireRankFor('broadcast'))
+            .then(Commands.argument('message', RankSysStringArgType().greedyString())
+                .executes(ctx => {
+                    const message = RankSysStringArgType().getString(ctx, 'message')
+                    const serverInstance = ctx.source.server || ctx.source.player.server
+                    serverInstance.players.forEach(p => p.tell(Text.gold('[Annonce] ').append(Text.white(message))))
+                    return 1
+                })
+            )
+    )
+
+    // ===== COMMANDE /a (ADMIN CHAT) =====
+    event.register(
+        Commands.literal('a')
+            .requires(requireRankFor('admin_chat'))
+            .then(Commands.argument('message', RankSysStringArgType().greedyString())
+                .executes(ctx => {
+                    const sender = ctx.source.player
+                    const message = RankSysStringArgType().getString(ctx, 'message')
+                    const minRankRequired = RankSys_COMMAND_PERMISSIONS['admin_chat']
+                    const serverInstance = ctx.source.server || (ctx.source.player ? ctx.source.player.server : null)
+                    
+                    if (sender && serverInstance) {
+                        serverInstance.players.forEach(p => {
+                            if (hasRank(p, minRankRequired)) {
+                                p.tell(Text.darkRed('[AdminChat] ')
+                                    .append(Text.gray(`${sender.username}: `))
+                                    .append(Text.white(message)))
+                            }
+                        })
+                    }
+                    return 1
+                })
+            )
+    )
+})
+
+function doGamemode(server, ctx, Arguments, mode) {
+    const target = Arguments.PLAYER.getResult(ctx, 'cible')
+    if (server) {
+        server.runCommandSilent(`gamemode ${mode} ${target.username}`)
+    }
+    return 1
+}
