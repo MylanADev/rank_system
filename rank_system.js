@@ -1,9 +1,9 @@
 // ============================================================
-//  SYSTÈME DE RANGS ET STAFF MODE HYBRIDE SÉCURISÉ
+//  SYSTÈME DE RANGS, STAFF MODE & TICKETING
 //  Minecraft 1.21.1 - NeoForge - KubeJS
 // ============================================================
 
-// --- ⚙️ CONFIGURATION DES ACCÈS AUX COMMANDES ----------------
+// --- CONFIGURATION DES ACCÈS AUX COMMANDES ----------------
 var RankSys_COMMAND_PERMISSIONS = {
     'modmute':     'modo',
     'modunmute':   'modo',
@@ -13,8 +13,8 @@ var RankSys_COMMAND_PERMISSIONS = {
     'modwarns':    'modo', 
     'modunwarn':   'modo',
     'modtp':       'modo',
-    'modinvsee':   'modo', 
     'modstaff':    'modo',
+    'reports':     'modo',
 
     'modkick':     'admin',
     'modban':      'admin',
@@ -28,23 +28,21 @@ var RankSys_COMMAND_PERMISSIONS = {
     'rank_set':    'fondateur' 
 };
 
-// --- ⚙️ CONFIGURATION DES OUTILS DU STAFF MODE ---------------
+// --- CONFIGURATION DES OUTILS DU STAFF MODE ---------------
 const StaffSys_TOOLS = {
     // HOTBAR (Actions ultra courantes)
     'tp':        { id: 'minecraft:ender_pearl',   name: '§dTéléportation',      slot: 0, type: 'target_player', cmd: 'modtp' },
-    'invsee':    { id: 'minecraft:spyglass',      name: '§bInspecter (Invsee)', slot: 1, type: 'target_player', cmd: 'modinvsee' },
-    'freeze':    { id: 'minecraft:blaze_rod',     name: '§eGeler (Freeze)',     slot: 2, type: 'target_player', cmd: 'modfreeze' },
-    'mute':      { id: 'minecraft:string',        name: '§7Rendre Muet',        slot: 3, type: 'target_player', cmd: 'modmute' },
+    'freeze':    { id: 'minecraft:blaze_rod',     name: '§eGeler (Freeze)',     slot: 1, type: 'target_player', cmd: 'modfreeze' },
+    'mute':      { id: 'minecraft:string',        name: '§7Rendre Muet',        slot: 2, type: 'target_player', cmd: 'modmute' },
     
     // HOTBAR (États du Modérateur)
     'gm_toggle': { id: 'minecraft:feather',       name: '§eMode: Solide (Créatif)',     slot: 5, type: 'toggle_gm', cmd: null },
     'build':     { id: 'minecraft:bricks',        name: '§aActiver Mode Construction',  slot: 6, type: 'toggle_build', cmd: null },
-    'vanish':    { id: 'minecraft:gunpowder',     name: '§8Vanish (OFF)',               slot: 7, type: 'toggle_vanish', cmd: null },
 
-    // Bouton de retour (Masqué en temps normal, apparaît en case 9 (slot 8) en mode construction)
+    // Bouton de retour (Apparaît en case 9 (slot 8) en mode construction)
     'exit_build':{ id: 'minecraft:slime_ball',    name: '§cRetour au Menu Staff',       slot: 8, type: 'exit_build', cmd: null },
 
-    // INVENTAIRE HAUT (Punitions Sévères et Divers - Ligne du haut de l'inventaire)
+    // INVENTAIRE HAUT (Punitions Sévères et Divers)
     'warn':      { id: 'minecraft:redstone_torch',name: '§cAvertir (Warn)',     slot: 9,  type: 'target_player', cmd: 'modwarn' },
     'ban':       { id: 'minecraft:tnt',           name: '§4Bannir (Ban)',       slot: 10, type: 'target_player', cmd: 'modban' },
     'clear':     { id: 'minecraft:sponge',        name: '§eNettoyer mon inventaire', slot: 17, type: 'direct_cmd', cmd: 'modclear' },
@@ -57,7 +55,7 @@ function RankSysStringArgType() { return Java.loadClass('com.mojang.brigadier.ar
 function RankSysIntegerArgumentType() { return Java.loadClass('com.mojang.brigadier.arguments.IntegerArgumentType') }
 
 // ============================================================
-//  🛠️ FONCTIONS UTILITAIRES
+//  FONCTIONS UTILITAIRES
 // ============================================================
 
 function getPlayerWarns(player) {
@@ -99,56 +97,25 @@ function doGamemode(server, ctx, Arguments, mode) {
 }
 
 // ============================================================
-//  🛡️ LOGIQUE DU STAFF MODE
+//  LOGIQUE DU STAFF MODE
 // ============================================================
-
-function executeVanish(player, enable) {
-    const pData = player.persistentData;
-    pData.putBoolean('vanished', enable);
-    
-    const isBuildMode = pData.getBoolean('staffBuildMode');
-
-    if (enable) {
-        player.potionEffects.add('minecraft:invisibility', 999999, 1, false, false);
-        player.tell(Text.gray('Vous êtes maintenant invisible (Vanish ON).'));
-        if (!isBuildMode) {
-            let sugar = Item.of('minecraft:sugar').withName('§fVanish (ON)');
-            sugar.set('minecraft:custom_data', { StaffTool: 'vanish' }); // NeoForge 1.21.1 !
-            player.inventory.setItem(StaffSys_TOOLS['vanish'].slot, sugar);
-        }
-    } else {
-        player.potionEffects.clear(); 
-        player.tell(Text.gray('Vous êtes de nouveau visible (Vanish OFF).'));
-        if (!isBuildMode) {
-            let gunPowder = Item.of('minecraft:gunpowder').withName('§8Vanish (OFF)');
-            gunPowder.set('minecraft:custom_data', { StaffTool: 'vanish' });
-            player.inventory.setItem(StaffSys_TOOLS['vanish'].slot, gunPowder);
-        }
-    }
-}
 
 function giveStaffTools(player) {
     player.inventory.clear();
     Object.keys(StaffSys_TOOLS).forEach(key => {
         const tool = StaffSys_TOOLS[key];
-        if (tool.type === 'exit_build') return; // On masque la Slimeball
+        if (tool.type === 'exit_build') return; 
         
         let item = Item.of(tool.id).withName(tool.name);
         if (tool.type === 'target_player') {
             item.setLore(['§7Utilisez (Clic Droit ou Jeter) pour préparer la commande', '§7puis tapez le pseudo du joueur.']);
-        } else if (tool.type === 'direct_cmd' || tool.type === 'toggle_vanish' || tool.type === 'toggle_build' || tool.type === 'toggle_gm') {
+        } else if (tool.type === 'direct_cmd' || tool.type === 'toggle_build' || tool.type === 'toggle_gm') {
             item.setLore(['§7Utilisez (Clic Droit ou Jeter) pour exécuter l\'action.']);
         }
         item.set('minecraft:custom_data', { StaffTool: key });
         player.inventory.setItem(tool.slot, item);
     });
 
-    const pData = player.persistentData;
-    if (pData.getBoolean('vanished')) {
-        let sugar = Item.of('minecraft:sugar').withName('§fVanish (ON)');
-        sugar.set('minecraft:custom_data', { StaffTool: 'vanish' });
-        player.inventory.setItem(StaffSys_TOOLS['vanish'].slot, sugar);
-    }
     if (player.isSpectator()) {
         let gmItem = Item.of('minecraft:phantom_membrane').withName('§bMode: Fantôme (Spectateur)');
         gmItem.set('minecraft:custom_data', { StaffTool: 'gm_toggle' });
@@ -161,7 +128,6 @@ function toggleStaffMode(player) {
     const isStaffMode = pData.getBoolean('staffMode');
 
     if (isStaffMode) {
-        // --- DÉSACTIVATION ---
         player.inventory.clear();
         if (pData.contains('savedInventory')) {
             const savedItems = pData.getList('savedInventory', 10);
@@ -179,14 +145,11 @@ function toggleStaffMode(player) {
         if (pData.contains('savedHealth')) player.health = pData.getFloat('savedHealth');
         if (pData.contains('savedFood')) player.foodLevel = pData.getInt('savedFood');
 
-        pData.putBoolean('staffMode', false);
-        pData.putBoolean('staffBuildMode', false); 
+        pData.getBoolean('staffMode', false);
+        pData.getBoolean('staffBuildMode', false); 
         player.tell(Text.green('Staff Mode désactivé. Inventaire, vie, faim et mode de jeu restaurés.'));
-        
-        if (pData.getBoolean('vanished')) executeVanish(player, false);
 
     } else {
-        // --- ACTIVATION ---
         let currentGM = 'survival';
         if (player.isCreativeMode()) currentGM = 'creative';
         else if (player.isSpectator()) currentGM = 'spectator';
@@ -219,18 +182,14 @@ function toggleStaffMode(player) {
 }
 
 // ============================================================
-//  🎛️ MOTEUR D'EXÉCUTION DES OUTILS
+//  MOTEUR D'EXÉCUTION DES OUTILS
 // ============================================================
 
 function executeStaffTool(player, toolKey) {
     const tool = StaffSys_TOOLS[toolKey];
     if (!tool) return;
 
-    if (tool.type === 'toggle_vanish') {
-        const isVanished = player.persistentData.getBoolean('vanished');
-        executeVanish(player, !isVanished);
-    } 
-    else if (tool.type === 'toggle_gm') {
+    if (tool.type === 'toggle_gm') {
         if (player.isSpectator()) {
             player.server.runCommandSilent(`gamemode creative ${player.username}`);
             player.tell(Text.green('Mode Tangible : Vous êtes en Créatif (collision activée).'));
@@ -250,12 +209,9 @@ function executeStaffTool(player, toolKey) {
         player.tell(Text.green('Mode Construction ACTIVÉ. Outils masqués, Anti-Grief désactivé.'));
         player.inventory.clear();
         
-        // La Slimeball est isolée en case 9 (slot 8)
         let exitItem = Item.of(StaffSys_TOOLS['exit_build'].id).withName(StaffSys_TOOLS['exit_build'].name);
         exitItem.set('minecraft:custom_data', { StaffTool: 'exit_build' });
         player.inventory.setItem(StaffSys_TOOLS['exit_build'].slot, exitItem);
-        
-        if (!player.persistentData.getBoolean('vanished')) executeVanish(player, true);
     }
     else if (tool.type === 'exit_build') {
         player.persistentData.putBoolean('staffBuildMode', false);
@@ -266,7 +222,7 @@ function executeStaffTool(player, toolKey) {
         player.server.runCommandSilent(`execute as ${player.username} run ${tool.cmd}`);
     }
     else if (tool.type === 'target_player') {
-        player.closeMenu(); // Ferme proprement l'inventaire
+        player.closeMenu(); 
         player.tell(Text.gold(`▶ Prêt pour ${tool.name}. Tapez le pseudo :`));
         player.tell(Text.green('➤ [ CLIQUEZ ICI POUR ENTRER LE PSEUDO ]').click('suggest_command', `/${tool.cmd} `));
     }
@@ -276,19 +232,17 @@ function executeStaffTool(player, toolKey) {
 //  ÉVÉNEMENTS SERVEUR & INTERACTIONS
 // ============================================================
 
-// --- DÉCLENCHEUR 1 : Le Clic Droit (Pour les outils dans la Hotbar) ---
 ItemEvents.rightClicked(event => {
     const { player, item } = event;
     if (!player.persistentData.getBoolean('staffMode')) return;
 
     if (item.has('minecraft:custom_data') && item.get('minecraft:custom_data').StaffTool) {
-        event.cancel(); // Empêche de lancer la perle, de manger, etc.
+        event.cancel(); 
         const toolKey = item.get('minecraft:custom_data').StaffTool;
         executeStaffTool(player, toolKey);
     }
 });
 
-// --- DÉCLENCHEUR 2 : Jeter l'item "A" ou "Q" (Aspirateur Anti-Pollution et Exécution via Inventaire) ---
 ItemEvents.dropped(event => {
     const { item, player } = event; 
     if (!player) return;
@@ -296,25 +250,19 @@ ItemEvents.dropped(event => {
     const pData = player.persistentData;
     const itemStack = item.item; 
     
-    // Tout ce bloc de sécurité/interaction ne s'applique QU'AUX MODÉRATEURS
     if (pData.getBoolean('staffMode')) {
-        
-        // 1. Si on "jette" un de nos outils custom (TNT, Spyglass, Slimeball...)
         if (itemStack.has('minecraft:custom_data') && itemStack.get('minecraft:custom_data').StaffTool) {
-            event.cancel(); // Annule la chute au sol : L'item retourne sagement dans sa case !
-            
+            event.cancel(); 
             const toolKey = itemStack.get('minecraft:custom_data').StaffTool;
-            executeStaffTool(player, toolKey); // Lance l'action de l'outil
+            executeStaffTool(player, toolKey); 
         } 
-        // 2. Si on jette un vrai bloc "poubelle" pris en Créatif (Aspirateur Anti-Pollution)
         else if (!pData.getBoolean('staffBuildMode')) {
-            item.discard(); // Le bloc est supprimé de l'existence avant même de toucher le sol
+            item.discard(); 
             player.tell(Text.gray('Item désintégré (Aspirateur Anti-Pollution).'));
         }
     }
 });
 
-// --- Protection Anti-Grief (Casse) ---
 BlockEvents.broken(event => {
     const { player } = event;
     const pData = player.persistentData;
@@ -328,7 +276,6 @@ BlockEvents.broken(event => {
     }
 });
 
-// --- Protection Anti-Grief (Pose) ---
 BlockEvents.placed(event => {
     const { player } = event;
     const pData = player.persistentData;
@@ -341,7 +288,6 @@ BlockEvents.placed(event => {
     }
 });
 
-// --- Invincibilité totale ---
 EntityEvents.hurt(event => {
     const entity = event.entity;
     if (entity.isPlayer() && entity.persistentData && entity.persistentData.getBoolean('staffMode')) {
@@ -349,7 +295,6 @@ EntityEvents.hurt(event => {
     }
 });
 
-// --- Anti-/kill ---
 EntityEvents.death(event => {
     const entity = event.entity;
     if (entity.isPlayer() && entity.persistentData && entity.persistentData.getBoolean('staffMode')) {
@@ -360,17 +305,29 @@ EntityEvents.death(event => {
 });
 
 PlayerEvents.loggedIn(event => {
-    const { player } = event
-    const pData = player.persistentData
+    const { player } = event;
+    const pData = player.persistentData;
 
     if (!pData.contains('rank')) {
-        pData.putString('rank', player.hasPermissions(4) ? 'fondateur' : 'joueur')
+        pData.putString('rank', player.hasPermissions(4) ? 'fondateur' : 'joueur');
     }
 
     if (pData.getBoolean('muted')) {
-        player.tell(Text.red('Vous êtes toujours muet(te).'))
+        player.tell(Text.red('Vous êtes toujours muet(te).'));
     }
-})
+
+    // --- ALERTE DE TICKETS À LA CONNEXION POUR LE STAFF ---
+    if (hasRank(player, 'modo') || player.hasPermissions(2)) {
+        let reports = JsonIO.read('kubejs/data/reports.json');
+        if (reports && reports.length > 0) {
+            player.tell(Text.darkRed('🚨 ATTENTION : ')
+                .append(Text.red(`Il y a actuellement ${reports.length} report(s) non traité(s). `))
+                .append(Text.yellow('[CLIQUEZ ICI POUR LES VOIR]')
+                    .click('run_command', '/reports')
+                    .hover('Ouvrir le menu des tickets')));
+        }
+    }
+});
 
 ServerEvents.tick(event => {
     const { server } = event
@@ -401,6 +358,118 @@ PlayerEvents.chat(event => {
 
 ServerEvents.commandRegistry(event => {
     const { commands: Commands, arguments: Arguments } = event
+
+    // ===== SYSTÈME DE TICKETING / REPORT =====
+
+    // 1. Commande pour reporter un problème : /report <le problème...>
+    event.register(
+        Commands.literal('report')
+            .then(Commands.argument('probleme', RankSysStringArgType().greedyString())
+                .executes(ctx => {
+                    const reporter = ctx.source.player;
+                    if (!reporter) return 0;
+                    
+                    const probleme = RankSysStringArgType().getString(ctx, 'probleme');
+                    
+                    const ticket = {
+                        date: new Date().toLocaleString('fr-FR', { timeZone: 'Europe/Paris' }),
+                        reporter: reporter.username,
+                        probleme: probleme
+                    };
+
+                    let reports = JsonIO.read('kubejs/data/reports.json');
+                    if (!reports) reports = [];
+                    reports.push(ticket);
+                    JsonIO.write('kubejs/data/reports.json', reports);
+                    
+                    const total = reports.length;
+
+                    reporter.tell(Text.green('Votre ticket a bien été enregistré. L\'équipe s\'en chargera rapidement.'));
+                    
+                    const server = ctx.source.server;
+                    server.players.forEach(p => {
+                        if (hasRank(p, 'modo') || p.hasPermissions(2)) {
+                            // Alerte Rouge dans le tchat
+                            p.tell(Text.darkRed('🚨 [NOUVEAU TICKET] ')
+                                .append(Text.yellow(reporter.username))
+                                .append(Text.gray(' a signalé un problème.')));
+                            p.tell(Text.red(`Attention : Il y a ${total} report(s) non traité(s). `)
+                                .append(Text.yellow('[OUVRIR LE MENU]')
+                                    .click('run_command', '/reports')));
+                            
+                            p.server.runCommandSilent(`playsound minecraft:block.note_block.pling master ${p.username}`);
+                        }
+                    });
+
+                    return 1;
+                })
+            )
+    )
+
+    // 2. Commande pour lire le menu : /reports
+    event.register(
+        Commands.literal('reports')
+            .requires(requireRankFor('reports'))
+            .executes(ctx => {
+                const moderator = ctx.source.player;
+                if (!moderator) return 0;
+
+                let reports = JsonIO.read('kubejs/data/reports.json');
+                
+                if (!reports || reports.length === 0) {
+                    moderator.tell(Text.green('Aucun ticket en attente. Bon travail !'));
+                    return 1;
+                }
+
+                moderator.tell(Text.gold(`╔═════ Tickets en attente (${reports.length}) ═════`));
+                
+                reports.forEach((ticket, index) => {
+                    // Construction du menu cliquable
+                    let ticketText = Text.yellow(`[#${index + 1}] `)
+                        .append(Text.gray(`${ticket.date} - `))
+                        .append(Text.aqua(`${ticket.reporter} `))
+                        .append(Text.white(`: ${ticket.probleme} `))
+                        // Le bouton TRAITER exécute automatiquement la suppression au clic
+                        .append(Text.green(' [TRAITER]')
+                            .hover('Cliquez pour marquer ce ticket comme RÉSOLU et le supprimer')
+                            .click('run_command', `/reports clear ${index + 1}`)
+                        );
+                        
+                    moderator.tell(ticketText);
+                });
+                moderator.tell(Text.gold(`╚═════════════════════════════════`));
+
+                return 1;
+            })
+            // Sous-commande cachée déclenchée par le bouton [TRAITER]
+            .then(Commands.literal('clear')
+                .then(Commands.argument('id', RankSysIntegerArgumentType().integer(1))
+                    .executes(ctx => {
+                        const moderator = ctx.source.player;
+                        const id = RankSysIntegerArgumentType().getInteger(ctx, 'id');
+                        
+                        let reports = JsonIO.read('kubejs/data/reports.json');
+                        if (!reports || id > reports.length) {
+                            if (moderator) moderator.tell(Text.red('ID de ticket invalide.'));
+                            return 0;
+                        }
+
+                        // Suppression du ticket de la base de données
+                        reports.splice(id - 1, 1);
+                        JsonIO.write('kubejs/data/reports.json', reports);
+
+                        if (moderator) {
+                            moderator.tell(Text.green(`Le ticket #${id} a été traité et supprimé avec succès.`));
+                            // On réaffiche le menu automatiquement pour qu'il voie les tickets restants
+                            moderator.server.runCommandSilent(`execute as ${moderator.username} run reports`);
+                        }
+                        return 1;
+                    })
+                )
+            )
+    )
+
+    // ===== MODSTAFF ET RANGS =====
 
     event.register(
         Commands.literal('modstaff')
@@ -451,6 +520,8 @@ ServerEvents.commandRegistry(event => {
                 })
             )
     )
+
+    // ===== MODÉRATION EN JEU =====
 
     event.register(
         Commands.literal('modmute')
@@ -599,117 +670,6 @@ ServerEvents.commandRegistry(event => {
                     serverInstance.runCommandSilent(`tp ${ctx.source.player.username} ${target.username}`)
                     return 1
                 })
-            )
-    )
-
-    event.register(
-        Commands.literal('modinvsee')
-            .requires(requireRankFor('modinvsee'))
-            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
-                .executes(ctx => {
-                    const moderator = ctx.source.player
-                    const target = Arguments.PLAYER.getResult(ctx, 'cible')
-                    
-                    if (!moderator) return 1
-
-                    moderator.tell(Text.gold(`╔═════ Inventaire de ${target.username} ═════`))
-                    
-                    let equipementLine = Text.gray(" Équipement: ")
-                    const armorSlots = ["Casque", "Plastron", "Jambières", "Bottes"]
-                    
-                    for (let i = 3; i >= 0; i--) {
-                        let item = target.inventory.getArmor(i)
-                        let slotName = armorSlots[3 - i]
-                        if (!item || item.id === 'minecraft:air') {
-                            equipementLine.append(Text.darkGray(`[${slotName}] `))
-                        } else {
-                            let itemName = item.name ? Text.of(item.name).string : item.id
-                            equipementLine.append(Text.aqua(`[${item.count}x ${itemName}] `)
-                                .hover(item.tooltip || [])
-                                .click('suggest_command', `/modinvsee_action ${target.username} armor ${i}`))
-                        }
-                    }
-                    
-                    let offhand = target.inventory.getOffhandItem()
-                    if (offhand && offhand.id !== 'minecraft:air') {
-                        let offhandName = offhand.name ? Text.of(offhand.name).string : offhand.id
-                        equipementLine.append(Text.lightPurple(`[Main 2: ${offhand.count}x ${offhandName}] `)
-                            .hover(offhand.tooltip || [])
-                            .click('suggest_command', `/modinvsee_action ${target.username} offhand 0`))
-                    }
-                    moderator.tell(equipementLine)
-                    moderator.tell(Text.gray("───────────────────────────────────────"))
-
-                    let order = []
-                    for (let i = 9; i < 36; i++) order.push(i) 
-                    for (let i = 0; i < 9; i++) order.push(i)   
-
-                    let currentLine = Text.gray(" ")
-                    order.forEach((slotId, index) => {
-                        let item = target.inventory.getItem(slotId)
-                        
-                        if (!item || item.id === 'minecraft:air') {
-                            currentLine.append(Text.darkGray("[ ] "))
-                        } else {
-                            let color = (index >= 27) ? Text.green : Text.white
-                            currentLine.append(color(`[${item.count}x] `)
-                                .hover(item.tooltip || [])
-                                .click('suggest_command', `/modinvsee_action ${target.username} main ${slotId}`))
-                        }
-
-                        if ((index + 1) % 9 === 0) {
-                            moderator.tell(currentLine)
-                            currentLine = Text.gray(" ")
-                        }
-                    })
-
-                    moderator.tell(Text.gold("╚") + Text.yellow(" Astuce: Cliquez sur un item pour préparer sa suppression.").italic())
-                    return 1
-                })
-            )
-    )
-
-    event.register(
-        Commands.literal('modinvsee_action')
-            .requires(requireRankFor('modinvsee'))
-            .then(Commands.argument('cible', Arguments.PLAYER.create(event))
-                .then(Commands.argument('type', RankSysStringArgType().word())
-                    .then(Commands.argument('slot', RankSysIntegerArgumentType().integer(0))
-                        .executes(ctx => {
-                            const moderator = ctx.source.player
-                            const target = Arguments.PLAYER.getResult(ctx, 'cible')
-                            const type = RankSysStringArgType().getString(ctx, 'type')
-                            const slot = RankSysIntegerArgumentType().getInteger(ctx, 'slot')
-
-                            if (!moderator) return 1
-                            
-                            let itemRemoved = 'un item'
-
-                            if (type === 'main') {
-                                let item = target.inventory.getItem(slot)
-                                if (item && item.id !== 'minecraft:air') {
-                                    itemRemoved = item.name ? Text.of(item.name).string : item.id
-                                    target.inventory.setItem(slot, 'minecraft:air')
-                                }
-                            } else if (type === 'armor') {
-                                let item = target.inventory.getArmor(slot)
-                                if (item && item.id !== 'minecraft:air') {
-                                    itemRemoved = item.name ? Text.of(item.name).string : item.id
-                                    target.inventory.setArmor(slot, 'minecraft:air')
-                                }
-                            } else if (type === 'offhand') {
-                                let item = target.inventory.getOffhandItem()
-                                if (item && item.id !== 'minecraft:air') {
-                                    itemRemoved = item.name ? Text.of(item.name).string : item.id
-                                    target.inventory.setOffhandItem('minecraft:air')
-                                }
-                            }
-
-                            moderator.tell(Text.red(`[Modération] L'item "${itemRemoved}" a été supprimé de l'inventaire de ${target.username}.`))
-                            return 1
-                        })
-                    )
-                )
             )
     )
 
