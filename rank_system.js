@@ -1,10 +1,9 @@
 // ============================================================
 //  SYSTÈME DE RANGS : CONFIGURATION ET COMMANDES INTERACTIVES
 //  Minecraft 1.21.1 - NeoForge - KubeJS
-//  À placer dans : kubejs/server_scripts/rank_system.js
 // ============================================================
 
-// --- ⚙️ CONFIGURATION DES ACCÈS AUX COMMANDES -----------------
+// --- CONFIGURATION DES ACCÈS AUX COMMANDES -----------------
 var RankSys_COMMAND_PERMISSIONS = {
     'modmute':     'modo',
     'modunmute':   'modo',
