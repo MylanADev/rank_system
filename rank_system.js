@@ -30,19 +30,15 @@ var RankSys_COMMAND_PERMISSIONS = {
 
 // --- CONFIGURATION DES OUTILS DU STAFF MODE ---------------
 const StaffSys_TOOLS = {
-    // HOTBAR (Actions ultra courantes)
     'tp':        { id: 'minecraft:ender_pearl',   name: '§dTéléportation',      slot: 0, type: 'target_player', cmd: 'modtp' },
     'freeze':    { id: 'minecraft:blaze_rod',     name: '§eGeler (Freeze)',     slot: 1, type: 'target_player', cmd: 'modfreeze' },
     'mute':      { id: 'minecraft:string',        name: '§7Rendre Muet',        slot: 2, type: 'target_player', cmd: 'modmute' },
     
-    // HOTBAR (États du Modérateur)
     'gm_toggle': { id: 'minecraft:feather',       name: '§eMode: Solide (Créatif)',     slot: 5, type: 'toggle_gm', cmd: null },
     'build':     { id: 'minecraft:bricks',        name: '§aActiver Mode Construction',  slot: 6, type: 'toggle_build', cmd: null },
 
-    // Bouton de retour (Apparaît en case 9 (slot 8) en mode construction)
     'exit_build':{ id: 'minecraft:slime_ball',    name: '§cRetour au Menu Staff',       slot: 8, type: 'exit_build', cmd: null },
 
-    // INVENTAIRE HAUT (Punitions Sévères et Divers)
     'warn':      { id: 'minecraft:redstone_torch',name: '§cAvertir (Warn)',     slot: 9,  type: 'target_player', cmd: 'modwarn' },
     'ban':       { id: 'minecraft:tnt',           name: '§4Bannir (Ban)',       slot: 10, type: 'target_player', cmd: 'modban' },
     'clear':     { id: 'minecraft:sponge',        name: '§eNettoyer mon inventaire', slot: 17, type: 'direct_cmd', cmd: 'modclear' },
@@ -113,12 +109,15 @@ function giveStaffTools(player) {
             item.setLore(['§7Utilisez (Clic Droit ou Jeter) pour exécuter l\'action.']);
         }
         item.set('minecraft:custom_data', { StaffTool: key });
+        // Ajout de la Malédiction de Disparition pour sécuriser la mort
+        item.enchant('minecraft:vanishing_curse', 1);
         player.inventory.setItem(tool.slot, item);
     });
 
     if (player.isSpectator()) {
         let gmItem = Item.of('minecraft:phantom_membrane').withName('§bMode: Fantôme (Spectateur)');
         gmItem.set('minecraft:custom_data', { StaffTool: 'gm_toggle' });
+        gmItem.enchant('minecraft:vanishing_curse', 1);
         player.inventory.setItem(StaffSys_TOOLS['gm_toggle'].slot, gmItem);
     }
 }
@@ -145,8 +144,8 @@ function toggleStaffMode(player) {
         if (pData.contains('savedHealth')) player.health = pData.getFloat('savedHealth');
         if (pData.contains('savedFood')) player.foodLevel = pData.getInt('savedFood');
 
-        pData.getBoolean('staffMode', false);
-        pData.getBoolean('staffBuildMode', false); 
+        pData.putBoolean('staffMode', false);
+        pData.putBoolean('staffBuildMode', false); 
         player.tell(Text.green('Staff Mode désactivé. Inventaire, vie, faim et mode de jeu restaurés.'));
 
     } else {
@@ -195,12 +194,14 @@ function executeStaffTool(player, toolKey) {
             player.tell(Text.green('Mode Tangible : Vous êtes en Créatif (collision activée).'));
             let gmItem = Item.of('minecraft:feather').withName('§eMode: Solide (Créatif)');
             gmItem.set('minecraft:custom_data', { StaffTool: 'gm_toggle' });
+            gmItem.enchant('minecraft:vanishing_curse', 1);
             player.inventory.setItem(StaffSys_TOOLS['gm_toggle'].slot, gmItem);
         } else {
             player.server.runCommandSilent(`gamemode spectator ${player.username}`);
             player.tell(Text.aqua('Mode Fantôme : Vous êtes en Spectateur (passe-murailles).'));
             let gmItem = Item.of('minecraft:phantom_membrane').withName('§bMode: Fantôme (Spectateur)');
             gmItem.set('minecraft:custom_data', { StaffTool: 'gm_toggle' });
+            gmItem.enchant('minecraft:vanishing_curse', 1);
             player.inventory.setItem(StaffSys_TOOLS['gm_toggle'].slot, gmItem);
         }
     }
@@ -211,6 +212,7 @@ function executeStaffTool(player, toolKey) {
         
         let exitItem = Item.of(StaffSys_TOOLS['exit_build'].id).withName(StaffSys_TOOLS['exit_build'].name);
         exitItem.set('minecraft:custom_data', { StaffTool: 'exit_build' });
+        exitItem.enchant('minecraft:vanishing_curse', 1);
         player.inventory.setItem(StaffSys_TOOLS['exit_build'].slot, exitItem);
     }
     else if (tool.type === 'exit_build') {
@@ -288,22 +290,6 @@ BlockEvents.placed(event => {
     }
 });
 
-EntityEvents.hurt(event => {
-    const entity = event.entity;
-    if (entity.isPlayer() && entity.persistentData && entity.persistentData.getBoolean('staffMode')) {
-        event.cancel();
-    }
-});
-
-EntityEvents.death(event => {
-    const entity = event.entity;
-    if (entity.isPlayer() && entity.persistentData && entity.persistentData.getBoolean('staffMode')) {
-        event.cancel(); 
-        entity.heal(20); 
-        entity.tell(Text.red("Votre Staff Mode vous a protégé d'une mort forcée."));
-    }
-});
-
 PlayerEvents.loggedIn(event => {
     const { player } = event;
     const pData = player.persistentData;
@@ -316,7 +302,6 @@ PlayerEvents.loggedIn(event => {
         player.tell(Text.red('Vous êtes toujours muet(te).'));
     }
 
-    // --- ALERTE DE TICKETS À LA CONNEXION POUR LE STAFF ---
     if (hasRank(player, 'modo') || player.hasPermissions(2)) {
         let reports = JsonIO.read('kubejs/data/reports.json');
         if (reports && reports.length > 0) {
@@ -344,6 +329,7 @@ ServerEvents.tick(event => {
     }
 })
 
+// Interception du tchat public
 PlayerEvents.chat(event => {
     if (event.player.persistentData.getBoolean('muted')) {
         event.cancel()
@@ -351,6 +337,20 @@ PlayerEvents.chat(event => {
     }
 })
 
+// Interception des messages privés (boucher la faille)
+ServerEvents.command(event => {
+    const player = event.parseResults.context.source.player;
+    if (!player) return; 
+
+    if (player.persistentData.getBoolean('muted')) {
+        const cmd = event.parseResults.reader.string.toLowerCase();
+        
+        if (cmd.startsWith('msg ') || cmd.startsWith('tell ') || cmd.startsWith('w ') || cmd.startsWith('me ')) {
+            event.cancel(); 
+            player.tell(Text.red('Vous ne pouvez pas envoyer de messages privés : vous êtes muet(te).'));
+        }
+    }
+});
 
 // ============================================================
 //  REGISTRE DES COMMANDES
@@ -361,7 +361,6 @@ ServerEvents.commandRegistry(event => {
 
     // ===== SYSTÈME DE TICKETING / REPORT =====
 
-    // 1. Commande pour reporter un problème : /report <le problème...>
     event.register(
         Commands.literal('report')
             .then(Commands.argument('probleme', RankSysStringArgType().greedyString())
@@ -389,7 +388,6 @@ ServerEvents.commandRegistry(event => {
                     const server = ctx.source.server;
                     server.players.forEach(p => {
                         if (hasRank(p, 'modo') || p.hasPermissions(2)) {
-                            // Alerte Rouge dans le tchat
                             p.tell(Text.darkRed('🚨 [NOUVEAU TICKET] ')
                                 .append(Text.yellow(reporter.username))
                                 .append(Text.gray(' a signalé un problème.')));
@@ -406,7 +404,6 @@ ServerEvents.commandRegistry(event => {
             )
     )
 
-    // 2. Commande pour lire le menu : /reports
     event.register(
         Commands.literal('reports')
             .requires(requireRankFor('reports'))
@@ -424,12 +421,10 @@ ServerEvents.commandRegistry(event => {
                 moderator.tell(Text.gold(`╔═════ Tickets en attente (${reports.length}) ═════`));
                 
                 reports.forEach((ticket, index) => {
-                    // Construction du menu cliquable
                     let ticketText = Text.yellow(`[#${index + 1}] `)
                         .append(Text.gray(`${ticket.date} - `))
                         .append(Text.aqua(`${ticket.reporter} `))
                         .append(Text.white(`: ${ticket.probleme} `))
-                        // Le bouton TRAITER exécute automatiquement la suppression au clic
                         .append(Text.green(' [TRAITER]')
                             .hover('Cliquez pour marquer ce ticket comme RÉSOLU et le supprimer')
                             .click('run_command', `/reports clear ${index + 1}`)
@@ -441,7 +436,6 @@ ServerEvents.commandRegistry(event => {
 
                 return 1;
             })
-            // Sous-commande cachée déclenchée par le bouton [TRAITER]
             .then(Commands.literal('clear')
                 .then(Commands.argument('id', RankSysIntegerArgumentType().integer(1))
                     .executes(ctx => {
@@ -454,13 +448,11 @@ ServerEvents.commandRegistry(event => {
                             return 0;
                         }
 
-                        // Suppression du ticket de la base de données
                         reports.splice(id - 1, 1);
                         JsonIO.write('kubejs/data/reports.json', reports);
 
                         if (moderator) {
                             moderator.tell(Text.green(`Le ticket #${id} a été traité et supprimé avec succès.`));
-                            // On réaffiche le menu automatiquement pour qu'il voie les tickets restants
                             moderator.server.runCommandSilent(`execute as ${moderator.username} run reports`);
                         }
                         return 1;
