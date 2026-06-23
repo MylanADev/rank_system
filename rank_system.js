@@ -64,6 +64,34 @@ function savePlayerWarns(player, warnsArray) {
     player.persistentData.putString('warnsJson', JSON.stringify(warnsArray))
 }
 
+function loadReports(server) {
+    var reports = [];
+    try {
+        var jsonStr = server.persistentData.getString('rankSysReportsJson');
+        if (jsonStr) {
+            reports = JSON.parse(jsonStr);
+        }
+    } catch (e) {
+        console.error('[RankSys] Erreur lecture reports : ' + e);
+        reports = [];
+    }
+
+    if (!Array.isArray(reports)) reports = [];
+    return reports;
+}
+
+function saveReports(server, reports) {
+    try {
+        server.persistentData.putString('rankSysReportsJson', JSON.stringify(reports));
+    } catch (e) {
+        console.error('[RankSys] Erreur écriture reports : ' + e);
+    }
+}
+
+function isPlayerSpectator(player) {
+    return String(player.gameMode || '').toLowerCase() === 'spectator';
+}
+
 function getRank(player) {
     const rank = player.persistentData.getString('rank')
     return RankSys_RANK_ORDER.includes(rank) ? rank : 'joueur'
@@ -102,20 +130,19 @@ function giveStaffTools(player) {
         const tool = StaffSys_TOOLS[key];
         if (tool.type === 'exit_build') return; 
         
-        let item = Item.of(tool.id).withName(tool.name);
+        let item = Item.of(tool.id).withName(Text.of(tool.name));
         if (tool.type === 'target_player') {
-            item.setLore(['§7Utilisez (Clic Droit ou Jeter) pour préparer la commande', '§7puis tapez le pseudo du joueur.']);
+            item.setLore([Text.gray('Utilisez (Clic Droit ou Jeter) pour préparer la commande'), Text.gray('puis tapez le pseudo du joueur.')]);
         } else if (tool.type === 'direct_cmd' || tool.type === 'toggle_build' || tool.type === 'toggle_gm') {
-            item.setLore(['§7Utilisez (Clic Droit ou Jeter) pour exécuter l\'action.']);
+            item.setLore([Text.gray('Utilisez (Clic Droit ou Jeter) pour exécuter l\'action.')]);
         }
         item.set('minecraft:custom_data', { StaffTool: key });
-        // Ajout de la Malédiction de Disparition pour sécuriser la mort
         item.enchant('minecraft:vanishing_curse', 1);
         player.inventory.setItem(tool.slot, item);
     });
 
-    if (player.isSpectator()) {
-        let gmItem = Item.of('minecraft:phantom_membrane').withName('§bMode: Fantôme (Spectateur)');
+    if (isPlayerSpectator(player)) {
+        let gmItem = Item.of('minecraft:phantom_membrane').withName(Text.of('§bMode: Fantôme (Spectateur)'));
         gmItem.set('minecraft:custom_data', { StaffTool: 'gm_toggle' });
         gmItem.enchant('minecraft:vanishing_curse', 1);
         player.inventory.setItem(StaffSys_TOOLS['gm_toggle'].slot, gmItem);
@@ -123,11 +150,13 @@ function giveStaffTools(player) {
 }
 
 function toggleStaffMode(player) {
-    const pData = player.persistentData;
-    const isStaffMode = pData.getBoolean('staffMode');
+    var pData = player.persistentData;
+    var isStaffMode = pData.getBoolean('staffMode');
 
     if (isStaffMode) {
         player.inventory.clear();
+        
+        // Restauration NBT 1.21 Native
         if (pData.contains('savedInventory')) {
             const savedItems = pData.getList('savedInventory', 10);
             for (let i = 0; i < savedItems.size(); i++) {
@@ -137,9 +166,10 @@ function toggleStaffMode(player) {
                 player.inventory.setItem(slot, itemStack);
             }
         }
-        
-        const savedGM = pData.getString('savedGamemode') || 'survival';
+
+        var savedGM = pData.getString('savedGamemode') || 'survival';
         player.server.runCommandSilent(`gamemode ${savedGM} ${player.username}`);
+        player.server.runCommandSilent(`effect clear ${player.username} minecraft:resistance`);
 
         if (pData.contains('savedHealth')) player.health = pData.getFloat('savedHealth');
         if (pData.contains('savedFood')) player.foodLevel = pData.getInt('savedFood');
@@ -147,17 +177,18 @@ function toggleStaffMode(player) {
         pData.putBoolean('staffMode', false);
         pData.putBoolean('staffBuildMode', false); 
         player.tell(Text.green('Staff Mode désactivé. Inventaire, vie, faim et mode de jeu restaurés.'));
-
+  
     } else {
-        let currentGM = 'survival';
-        if (player.isCreativeMode()) currentGM = 'creative';
-        else if (player.isSpectator()) currentGM = 'spectator';
-        else if (player.server.runCommandSilent(`execute if entity ${player.username}[gamemode=adventure]`) > 0) currentGM = 'adventure';
+        var currentGM = String(player.gameMode || 'survival').toLowerCase();
+        if (['survival', 'creative', 'adventure', 'spectator'].indexOf(currentGM) === -1) {
+            currentGM = 'survival';
+        }
         pData.putString('savedGamemode', currentGM);
 
         pData.putFloat('savedHealth', player.health);
         pData.putInt('savedFood', player.foodLevel);
 
+        // Sauvegarde NBT 1.21 Native
         let savedList = Utils.newList();
         for (let i = 0; i < 36; i++) {
             let item = player.inventory.getItem(i);
@@ -176,6 +207,7 @@ function toggleStaffMode(player) {
         giveStaffTools(player);
 
         pData.putBoolean('staffMode', true);
+        player.server.runCommandSilent(`effect give ${player.username} minecraft:resistance infinite 4 true`);
         player.tell(Text.gold('Staff Mode activé. Vous êtes en Créatif protégé. Ouvrez l\'inventaire (E).'));
     }
 }
@@ -189,20 +221,20 @@ function executeStaffTool(player, toolKey) {
     if (!tool) return;
 
     if (tool.type === 'toggle_gm') {
-        if (player.isSpectator()) {
+        if (isPlayerSpectator(player)) {
             player.server.runCommandSilent(`gamemode creative ${player.username}`);
             player.tell(Text.green('Mode Tangible : Vous êtes en Créatif (collision activée).'));
-            let gmItem = Item.of('minecraft:feather').withName('§eMode: Solide (Créatif)');
+            let gmItem = Item.of('minecraft:feather').withName(Text.of('§eMode: Solide (Créatif)'));
             gmItem.set('minecraft:custom_data', { StaffTool: 'gm_toggle' });
             gmItem.enchant('minecraft:vanishing_curse', 1);
             player.inventory.setItem(StaffSys_TOOLS['gm_toggle'].slot, gmItem);
         } else {
             player.server.runCommandSilent(`gamemode spectator ${player.username}`);
             player.tell(Text.aqua('Mode Fantôme : Vous êtes en Spectateur (passe-murailles).'));
-            let gmItem = Item.of('minecraft:phantom_membrane').withName('§bMode: Fantôme (Spectateur)');
-            gmItem.set('minecraft:custom_data', { StaffTool: 'gm_toggle' });
-            gmItem.enchant('minecraft:vanishing_curse', 1);
-            player.inventory.setItem(StaffSys_TOOLS['gm_toggle'].slot, gmItem);
+            let gmItemSpectator = Item.of('minecraft:phantom_membrane').withName(Text.of('§bMode: Fantôme (Spectateur)'));
+            gmItemSpectator.set('minecraft:custom_data', { StaffTool: 'gm_toggle' });
+            gmItemSpectator.enchant('minecraft:vanishing_curse', 1);
+            player.inventory.setItem(StaffSys_TOOLS['gm_toggle'].slot, gmItemSpectator);
         }
     }
     else if (tool.type === 'toggle_build') {
@@ -210,7 +242,7 @@ function executeStaffTool(player, toolKey) {
         player.tell(Text.green('Mode Construction ACTIVÉ. Outils masqués, Anti-Grief désactivé.'));
         player.inventory.clear();
         
-        let exitItem = Item.of(StaffSys_TOOLS['exit_build'].id).withName(StaffSys_TOOLS['exit_build'].name);
+        let exitItem = Item.of(StaffSys_TOOLS['exit_build'].id).withName(Text.of(StaffSys_TOOLS['exit_build'].name));
         exitItem.set('minecraft:custom_data', { StaffTool: 'exit_build' });
         exitItem.enchant('minecraft:vanishing_curse', 1);
         player.inventory.setItem(StaffSys_TOOLS['exit_build'].slot, exitItem);
@@ -236,6 +268,7 @@ function executeStaffTool(player, toolKey) {
 
 ItemEvents.rightClicked(event => {
     const { player, item } = event;
+    if (!player) return;
     if (!player.persistentData.getBoolean('staffMode')) return;
 
     if (item.has('minecraft:custom_data') && item.get('minecraft:custom_data').StaffTool) {
@@ -250,26 +283,40 @@ ItemEvents.dropped(event => {
     if (!player) return;
 
     const pData = player.persistentData;
-    const itemStack = item.item; 
-    
-    if (pData.getBoolean('staffMode')) {
-        if (itemStack.has('minecraft:custom_data') && itemStack.get('minecraft:custom_data').StaffTool) {
-            event.cancel(); 
-            const toolKey = itemStack.get('minecraft:custom_data').StaffTool;
-            executeStaffTool(player, toolKey); 
-        } 
-        else if (!pData.getBoolean('staffBuildMode')) {
-            item.discard(); 
-            player.tell(Text.gray('Item désintégré (Aspirateur Anti-Pollution).'));
+    if (!pData.getBoolean('staffMode')) return;
+
+    var itemStack = null;
+    if (item) {
+        if (item.item && typeof item.item.has === 'function') {
+            itemStack = item.item;
+        } else if (item.itemStack && typeof item.itemStack.has === 'function') {
+            itemStack = item.itemStack;
+        } else if (item.stack && typeof item.stack.has === 'function') {
+            itemStack = item.stack;
+        } else if (typeof item.has === 'function') {
+            itemStack = item;
         }
+    }
+
+    if (!itemStack) return;
+
+    if (itemStack.has('minecraft:custom_data') && itemStack.get('minecraft:custom_data').StaffTool) {
+        event.cancel(); 
+        const toolKey = itemStack.get('minecraft:custom_data').StaffTool;
+        executeStaffTool(player, toolKey); 
+    } 
+    else if (!pData.getBoolean('staffBuildMode')) {
+        item.discard(); 
+        player.tell(Text.gray('Item désintégré (Aspirateur Anti-Pollution).'));
     }
 });
 
 BlockEvents.broken(event => {
     const { player } = event;
+    if (!player) return;
     const pData = player.persistentData;
-    
-    if (player && pData && pData.getBoolean('staffMode')) {
+
+    if (pData.getBoolean('staffMode')) {
         if (pData.getBoolean('staffBuildMode')) return; 
         if (player.mainHandItem.id === 'minecraft:wooden_axe') return; 
         
@@ -280,9 +327,10 @@ BlockEvents.broken(event => {
 
 BlockEvents.placed(event => {
     const { player } = event;
+    if (!player) return;
     const pData = player.persistentData;
-    
-    if (player && pData && pData.getBoolean('staffMode')) {
+
+    if (pData.getBoolean('staffMode')) {
         if (pData.getBoolean('staffBuildMode')) return; 
         
         event.cancel();
@@ -302,9 +350,13 @@ PlayerEvents.loggedIn(event => {
         player.tell(Text.red('Vous êtes toujours muet(te).'));
     }
 
+    if (pData.getBoolean('staffMode')) {
+        player.server.runCommandSilent(`effect give ${player.username} minecraft:resistance infinite 4 true`);
+    }
+
     if (hasRank(player, 'modo') || player.hasPermissions(2)) {
-        let reports = JsonIO.read('kubejs/data/reports.json');
-        if (reports && reports.length > 0) {
+        let reports = loadReports(player.server);
+        if (reports.length > 0) {
             player.tell(Text.darkRed('🚨 ATTENTION : ')
                 .append(Text.red(`Il y a actuellement ${reports.length} report(s) non traité(s). `))
                 .append(Text.yellow('[CLIQUEZ ICI POUR LES VOIR]')
@@ -329,7 +381,6 @@ ServerEvents.tick(event => {
     }
 })
 
-// Interception du tchat public
 PlayerEvents.chat(event => {
     if (event.player.persistentData.getBoolean('muted')) {
         event.cancel()
@@ -337,7 +388,6 @@ PlayerEvents.chat(event => {
     }
 })
 
-// Interception des messages privés (boucher la faille)
 ServerEvents.command(event => {
     const player = event.parseResults.context.source.player;
     if (!player) return; 
@@ -359,8 +409,6 @@ ServerEvents.command(event => {
 ServerEvents.commandRegistry(event => {
     const { commands: Commands, arguments: Arguments } = event
 
-    // ===== SYSTÈME DE TICKETING / REPORT =====
-
     event.register(
         Commands.literal('report')
             .then(Commands.argument('probleme', RankSysStringArgType().greedyString())
@@ -376,16 +424,15 @@ ServerEvents.commandRegistry(event => {
                         probleme: probleme
                     };
 
-                    let reports = JsonIO.read('kubejs/data/reports.json');
-                    if (!reports) reports = [];
+                    const server = ctx.source.server;
+                    let reports = loadReports(server);
                     reports.push(ticket);
-                    JsonIO.write('kubejs/data/reports.json', reports);
+                    saveReports(server, reports);
                     
                     const total = reports.length;
 
                     reporter.tell(Text.green('Votre ticket a bien été enregistré. L\'équipe s\'en chargera rapidement.'));
                     
-                    const server = ctx.source.server;
                     server.players.forEach(p => {
                         if (hasRank(p, 'modo') || p.hasPermissions(2)) {
                             p.tell(Text.darkRed('🚨 [NOUVEAU TICKET] ')
@@ -393,7 +440,7 @@ ServerEvents.commandRegistry(event => {
                                 .append(Text.gray(' a signalé un problème.')));
                             p.tell(Text.red(`Attention : Il y a ${total} report(s) non traité(s). `)
                                 .append(Text.yellow('[OUVRIR LE MENU]')
-                                    .click('run_command', '/reports')));
+                                .click('run_command', '/reports')));
                             
                             p.server.runCommandSilent(`playsound minecraft:block.note_block.pling master ${p.username}`);
                         }
@@ -411,9 +458,9 @@ ServerEvents.commandRegistry(event => {
                 const moderator = ctx.source.player;
                 if (!moderator) return 0;
 
-                let reports = JsonIO.read('kubejs/data/reports.json');
-                
-                if (!reports || reports.length === 0) {
+                let reports = loadReports(ctx.source.server || moderator.server);
+
+                if (reports.length === 0) {
                     moderator.tell(Text.green('Aucun ticket en attente. Bon travail !'));
                     return 1;
                 }
@@ -441,15 +488,16 @@ ServerEvents.commandRegistry(event => {
                     .executes(ctx => {
                         const moderator = ctx.source.player;
                         const id = RankSysIntegerArgumentType().getInteger(ctx, 'id');
-                        
-                        let reports = JsonIO.read('kubejs/data/reports.json');
-                        if (!reports || id > reports.length) {
+                        const server = ctx.source.server || (moderator ? moderator.server : null);
+
+                        let reports = loadReports(server);
+                        if (id > reports.length) {
                             if (moderator) moderator.tell(Text.red('ID de ticket invalide.'));
                             return 0;
                         }
 
                         reports.splice(id - 1, 1);
-                        JsonIO.write('kubejs/data/reports.json', reports);
+                        saveReports(server, reports);
 
                         if (moderator) {
                             moderator.tell(Text.green(`Le ticket #${id} a été traité et supprimé avec succès.`));
@@ -460,8 +508,6 @@ ServerEvents.commandRegistry(event => {
                 )
             )
     )
-
-    // ===== MODSTAFF ET RANGS =====
 
     event.register(
         Commands.literal('modstaff')
@@ -512,8 +558,6 @@ ServerEvents.commandRegistry(event => {
                 })
             )
     )
-
-    // ===== MODÉRATION EN JEU =====
 
     event.register(
         Commands.literal('modmute')
